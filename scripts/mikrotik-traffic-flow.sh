@@ -4,7 +4,7 @@
 # Uso:  MIKROTIK_PASS='xxx' ./scripts/mikrotik-traffic-flow.sh [apply|show|remove]
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo /nonexistent)"
 # shellcheck disable=SC1091
 [[ -f "$SCRIPT_DIR/../config.env" ]] && source "$SCRIPT_DIR/../config.env"
 

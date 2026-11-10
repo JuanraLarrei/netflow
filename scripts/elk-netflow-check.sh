@@ -4,13 +4,13 @@
 # Uso: ./scripts/elk-netflow-check.sh [--no-firewall] [--capture-seconds N]
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo /nonexistent)"
 # shellcheck disable=SC1091
 [[ -f "$SCRIPT_DIR/../config.env" ]] && source "$SCRIPT_DIR/../config.env"
 
 MIKROTIK_IP="${MIKROTIK_IP:-10.10.10.1}"
 NETFLOW_PORT="${NETFLOW_PORT:-2055}"
-ES_URL="${ES_URL:-https://localhost:9200}"
+ES_URL="${ES_URL:-https://10.10.10.14:9200}"
 ES_USER="${ES_USER:-elastic}"
 CAPTURE_SECONDS="${CAPTURE_SECONDS:-20}"
 DO_FIREWALL=1
@@ -30,16 +30,18 @@ WARNINGS=0; FAILS=0
 
 [[ $EUID -eq 0 ]] || { echo "Ejecuta como root"; exit 1; }
 
-# 1) Elastic Agent / Filebeat
-if systemctl list-unit-files 2>/dev/null | grep -q '^elastic-agent'; then
+# 1) Elastic Agent / Filebeat (se capturan las salidas en variables: evita SIGPIPE con pipefail)
+UNITS="$(systemctl list-unit-files --no-legend 2>/dev/null || true)"
+if grep -q '^elastic-agent' <<<"$UNITS"; then
   if systemctl is-active --quiet elastic-agent; then ok "elastic-agent activo"
   else fail "elastic-agent instalado pero parado -> systemctl enable --now elastic-agent"; fi
-  if command -v elastic-agent >/dev/null; then
-    elastic-agent status 2>/dev/null | grep -iE 'netflow|healthy|degraded|failed' | head -20 || true
-  fi
-elif systemctl list-unit-files 2>/dev/null | grep -q '^filebeat'; then
-  info "No hay elastic-agent; se detecta filebeat (módulo netflow)"
-  if systemctl is-active --quiet filebeat; then ok "filebeat activo"; else fail "filebeat parado"; fi
+elif grep -q '^filebeat' <<<"$UNITS"; then
+  info "Colector: filebeat (módulo netflow)"
+  if systemctl is-active --quiet filebeat; then ok "filebeat activo"
+  else fail "filebeat parado -> systemctl enable --now filebeat"; fi
+  MODS="$(filebeat modules list 2>/dev/null || true)"
+  if sed -n '/^Enabled:/,/^Disabled:/p' <<<"$MODS" | grep -qx 'netflow'; then ok "módulo netflow habilitado"
+  else fail "módulo netflow deshabilitado -> filebeat modules enable netflow, y en modules.d/netflow.yml: log.enabled: true y netflow_host: 0.0.0.0"; fi
 else
   warn "No se encuentra elastic-agent ni filebeat como servicio systemd"
 fi
@@ -47,7 +49,7 @@ fi
 # 2) Puerto UDP a la escucha y en qué dirección
 LISTEN="$(ss -H -lunp "sport = :${NETFLOW_PORT}" 2>/dev/null)"
 if [[ -z "$LISTEN" ]]; then
-  fail "Nada escucha en UDP ${NETFLOW_PORT}. En Kibana > Fleet > Agent policies > (política del agente) > NetFlow Records: comprueba que está asignada a ESTE agente y que el puerto es ${NETFLOW_PORT}"
+  fail "Nada escucha en UDP ${NETFLOW_PORT} (Elastic Agent: Fleet > NetFlow Records asignada al agente; filebeat: módulo netflow habilitado y servicio activo)"
 else
   echo "$LISTEN"
   LOCAL_ADDR="$(awk '{print $4}' <<<"$LISTEN" | head -1)"
@@ -87,11 +89,13 @@ fi
 # 5) ¿Hay documentos en Elasticsearch?
 if [[ -z "${ES_PASS:-}" && -t 0 ]]; then read -rsp "Contraseña de Elasticsearch para ${ES_USER} (Enter para omitir): " ES_PASS; echo; fi
 if [[ -n "${ES_PASS:-}" ]]; then
-  Q='{"query":{"range":{"@timestamp":{"gte":"now-15m"}}}}'
-  RESP="$(curl -sk -u "${ES_USER}:${ES_PASS}" -H 'Content-Type: application/json' \
-          "${ES_URL}/logs-netflow.log-*/_count" -d "$Q" 2>&1)"
+  Q='{"query":{"bool":{"filter":[{"range":{"@timestamp":{"gte":"now-15m"}}},{"term":{"event.dataset":"netflow.log"}}]}}}'
+  CA_OPT=(-k); [[ -r "${ES_CA:-/etc/elasticsearch/certs/http_ca.crt}" ]] && CA_OPT=(--cacert "${ES_CA:-/etc/elasticsearch/certs/http_ca.crt}")
+  # filebeat -> filebeat-*, Elastic Agent -> logs-netflow.log-*
+  RESP="$(curl -s "${CA_OPT[@]}" -u "${ES_USER}:${ES_PASS}" -H 'Content-Type: application/json' \
+          "${ES_URL}/filebeat-*,logs-netflow.log-*/_count?ignore_unavailable=true" -d "$Q" 2>&1)"
   COUNT="$(grep -oE '"count":[0-9]+' <<<"$RESP" | cut -d: -f2)"
-  if [[ -n "$COUNT" && "$COUNT" -gt 0 ]]; then ok "Elasticsearch: ${COUNT} flujos en logs-netflow.log-* (últimos 15 min)"
+  if [[ -n "$COUNT" && "$COUNT" -gt 0 ]]; then ok "Elasticsearch: ${COUNT} flujos netflow.log (últimos 15 min)"
   elif [[ -n "$COUNT" ]]; then warn "Elasticsearch: 0 documentos aún (la plantilla v9 puede tardar hasta ~1 min en llegar)"
   else fail "Consulta a Elasticsearch fallida: ${RESP:0:200}"; fi
 fi
