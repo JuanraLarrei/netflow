@@ -24,7 +24,16 @@ output.elasticsearch:
   username: "${ES_USER}"
   password: "${ES_PWD}"
   ssl.certificate_authorities: ["/etc/elasticsearch/certs/http_ca.crt"]
+  index: "logs-netflow.log-default"      # data stream del paquete NetFlow -> dashboards [Logs Netflow]
+setup.template.enabled: false            # la plantilla la aporta el paquete NetFlow de Fleet
+setup.ilm.enabled: false
+processors:
+  - add_fields:
+      target: data_stream
+      fields: {type: logs, dataset: netflow.log, namespace: default}
 ```
+**Importante para los dashboards `[Logs Netflow]`:** buscan en el data view `logs-*` con `data_stream.dataset: netflow.log`, así que filebeat debe escribir en `logs-netflow.log-default` (con el paquete NetFlow instalado en Fleet para plantilla y pipeline). Si escribe en `filebeat-*`, Discover ve los datos pero los dashboards salen vacíos.
+
 Después: `filebeat setup --index-management && systemctl enable --now filebeat`.
 (Con Elastic Agent/Fleet la integración "NetFlow Records" también debe escuchar en `0.0.0.0`, no en `localhost`.)
 
@@ -54,7 +63,7 @@ RouterOS v6:
 ```
 
 ## 4. Ver los datos
-Kibana → Discover, data view `filebeat-*`, filtro `event.dataset : "netflow.log"`. (Con Elastic Agent los datos van a `logs-netflow.log-*`.)
+Kibana → Dashboards → `[Logs Netflow] Overview / Traffic Analysis / Top-N / ...` (rango: últimos 15 min). Discover: data view `logs-*`, filtro `data_stream.dataset : "netflow.log"`. El panel de VLAN sale vacío porque MikroTik no exporta `netflow.vlan_id`.
 
 ## Problemas típicos
 - `0 paquetes` en tcpdump → firewall de Proxmox (Datacenter/Node/VM → Firewall) o target mal configurado en el MikroTik.

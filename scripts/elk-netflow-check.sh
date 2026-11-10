@@ -93,7 +93,7 @@ if [[ -n "${ES_PASS:-}" ]]; then
   CA_OPT=(-k); [[ -r "${ES_CA:-/etc/elasticsearch/certs/http_ca.crt}" ]] && CA_OPT=(--cacert "${ES_CA:-/etc/elasticsearch/certs/http_ca.crt}")
   # filebeat -> filebeat-*, Elastic Agent -> logs-netflow.log-*
   RESP="$(curl -s "${CA_OPT[@]}" -u "${ES_USER}:${ES_PASS}" -H 'Content-Type: application/json' \
-          "${ES_URL}/filebeat-*,logs-netflow.log-*/_count?ignore_unavailable=true" -d "$Q" 2>&1)"
+          "${ES_URL}/logs-netflow.log-*,filebeat-*/_count?ignore_unavailable=true" -d "$Q" 2>&1)"
   COUNT="$(grep -oE '"count":[0-9]+' <<<"$RESP" | cut -d: -f2)"
   if [[ -n "$COUNT" && "$COUNT" -gt 0 ]]; then ok "Elasticsearch: ${COUNT} flujos netflow.log (últimos 15 min)"
   elif [[ -n "$COUNT" ]]; then warn "Elasticsearch: 0 documentos aún (la plantilla v9 puede tardar hasta ~1 min en llegar)"
